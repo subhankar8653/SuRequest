@@ -19,16 +19,18 @@ async def broadcast_messages(user_id, message):
         return await broadcast_messages(user_id, message)
     except InputUserDeactivated:
         await db.delete_user(int(user_id))
-        logging.info(f"{user_id}-Removed from Database, since deleted account.")
+        logging.info(f"{user_id} - Removed from Database, since deleted account.")
         return False, "Deleted"
     except UserIsBlocked:
         await db.delete_user(int(user_id))
-        logging.info(f"{user_id} -Blocked the bot.")
+        logging.info(f"{user_id} - Blocked the bot.")
         return False, "Blocked"
     except PeerIdInvalid:
-        await db.delete_user(int(user_id))
-        logging.info(f"{user_id} - PeerIdInvalid")
-        return False, "Error"
+        # ⚠️ DELETE MAT KARO — ye sirf iska matlab hai bot ne
+        # is user se pehle kabhi baat nahi ki (cache miss).
+        # Redeploy ke baad ye common hai. User DB mein rehega.
+        logging.info(f"{user_id} - PeerIdInvalid (skipped, not deleted)")
+        return False, "PeerInvalid"
     except Exception as e:
         return False, "Error"
 
@@ -45,7 +47,8 @@ async def verupikkals(bot, message):
     done = 0
     blocked = 0
     deleted = 0
-    failed =0
+    failed = 0
+    peer_invalid = 0  # NEW: alag counter
 
     success = 0
     async for user in users:
@@ -58,17 +61,33 @@ async def verupikkals(bot, message):
                     blocked += 1
                 elif sh == "Deleted":
                     deleted += 1
+                elif sh == "PeerInvalid":
+                    peer_invalid += 1  # sirf count karo, delete nahi
                 elif sh == "Error":
                     failed += 1
             done += 1
             if not done % 20:
-                await sts.edit(f"Broadcast in progress:\n\nTotal Users {total_users}\nCompleted: {done} / {total_users}\nSuccess: {success}\nBlocked: {blocked}\nDeleted: {deleted}")    
+                await sts.edit(
+                    f"Broadcast in progress:\n\n"
+                    f"Total Users: {total_users}\n"
+                    f"Completed: {done} / {total_users}\n"
+                    f"✅ Success: {success}\n"
+                    f"🚫 Blocked: {blocked}\n"
+                    f"❌ Deleted: {deleted}\n"
+                    f"⚠️ PeerInvalid (skipped): {peer_invalid}"
+                )
         else:
-            # Handle the case where 'id' key is missing in the user dictionary
             done += 1
             failed += 1
-            if not done % 20:
-                await sts.edit(f"Broadcast in progress:\n\nTotal Users {total_users}\nCompleted: {done} / {total_users}\nSuccess: {success}\nBlocked: {blocked}\nDeleted: {deleted}")    
-    
-    time_taken = datetime.timedelta(seconds=int(time.time()-start_time))
-    await sts.edit(f"Broadcast Completed:\nCompleted in {time_taken} seconds.\n\nTotal Users {total_users}\nCompleted: {done} / {total_users}\nSuccess: {success}\nBlocked: {blocked}\nDeleted: {deleted}")
+
+    time_taken = datetime.timedelta(seconds=int(time.time() - start_time))
+    await sts.edit(
+        f"✅ Broadcast Completed in {time_taken}\n\n"
+        f"Total Users: {total_users}\n"
+        f"Completed: {done} / {total_users}\n"
+        f"✅ Success: {success}\n"
+        f"🚫 Blocked: {blocked}\n"
+        f"❌ Deleted: {deleted}\n"
+        f"⚠️ PeerInvalid (skipped): {peer_invalid}\n"
+        f"💥 Other Errors: {failed}"
+    )

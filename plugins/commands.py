@@ -1,5 +1,6 @@
 import asyncio
 from pyrogram import Client, filters, enums
+from pyrogram.errors import FloodWait, UserIsBlocked, InputUserDeactivated, PeerIdInvalid
 from config import LOG_CHANNEL, API_ID, API_HASH, NEW_REQ_MODE, ADMINS
 from plugins.database import db
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -46,19 +47,9 @@ async def start_message(c, m):
 
 # ─────────────────────────────────────────────
 #  /setwelcome  — admin welcome text set kare
-#
-#  Usage:
-#    /setwelcome
-#    Aapka naya welcome message yahan likho
-#
-#  Variables jo use kar sakte ho:
-#    {mention}    → user ka mention
-#    {first_name} → user ka naam
-#    {chat_title} → group ka naam
 # ─────────────────────────────────────────────
 @Client.on_message(filters.command('setwelcome') & filters.user(ADMINS) & filters.private)
 async def set_welcome(client, message):
-    # Command ke baad wala text lo
     text_parts = message.text.split(None, 1)
     if len(text_parts) < 2 or not text_parts[1].strip():
         await message.reply(
@@ -82,12 +73,13 @@ async def set_welcome(client, message):
 
 
 # ─────────────────────────────────────────────
-#  /editwelcome — already bheje gaye pinned
-#                welcome messages bulk edit karo
+#  /editwelcome — pinned_msg_id wale users ka
+#                purana message delete karke
+#                naya message bhejo (broadcast style)
 #
-#  Ye command sirf ADMIN ke bot DM mein chalega.
-#  Bot DB mein stored har user ke pinned_msg_id
-#  use karke unka message edit karega.
+#  ✅ FloodWait handle hota hai
+#  ✅ PeerIdInvalid pe skip (delete nahi)
+#  ✅ Broadcast jaisi progress update
 # ─────────────────────────────────────────────
 @Client.on_message(filters.command('editwelcome') & filters.user(ADMINS) & filters.private)
 async def edit_welcome(client, message):
@@ -100,7 +92,8 @@ async def edit_welcome(client, message):
             "• <code>{mention}</code> → user mention\n"
             "• <code>{first_name}</code> → user ka naam\n\n"
             "⚠️ Sirf unhi users ka message edit hoga jinka\n"
-            "pinned_msg_id DB mein saved hai."
+            "pinned_msg_id DB mein saved hai.\n\n"
+            "💡 Sabko fresh welcome bhejne ke liye /broadcastwelcome use karo."
         )
         return
 
@@ -112,11 +105,11 @@ async def edit_welcome(client, message):
     success = 0
     failed = 0
     skipped = 0
+    peer_invalid = 0
 
     bot_username = (await client.get_me()).username
 
     async for user in users:
-        # pinned_msg_id check karo — agar missing ya None hai toh skip karo
         pinned_id = user.get('pinned_msg_id')
         if not pinned_id:
             skipped += 1
@@ -139,7 +132,7 @@ async def edit_welcome(client, message):
             except Exception:
                 pass
 
-            # Step 2: Naya message bhejo — user ko notification aayega
+            # Step 2: Naya message bhejo
             new_msg = await client.send_message(
                 chat_id=int(user['id']),
                 text=formatted_text,
@@ -149,26 +142,131 @@ async def edit_welcome(client, message):
                 )
             )
 
-            # Step 3: Naye message ka ID DB mein update karo
+            # Step 3: DB update
             await db.col.update_one(
                 {'id': user['id']},
                 {'$set': {'pinned_msg_id': new_msg.id}}
             )
 
             success += 1
-        except Exception as e:
+
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
+            failed += 1  # Is user ko skip karo, agle baar try hoga
+        except (PeerIdInvalid, UserIsBlocked, InputUserDeactivated):
+            # ⚠️ Delete MAT karo — sirf count karo
+            peer_invalid += 1
+        except Exception:
             failed += 1
 
         if total % 20 == 0:
             await sts.edit(
                 f"✏️ Editing in progress...\n\n"
-                f"Done: {total}\nSuccess: {success}\nFailed: {failed}\nSkipped: {skipped}"
+                f"Done: {total} | ✅ Success: {success}\n"
+                f"❌ Failed: {failed} | ⚠️ Skipped: {peer_invalid}"
             )
-        await asyncio.sleep(0.3)  # flood wait se bachne ke liye
+        await asyncio.sleep(0.3)
 
     await sts.edit(
         f"✅ <b>Edit Complete!</b>\n\n"
-        f"Total: {total}\nSuccess: {success}\nFailed: {failed}\nSkipped: {skipped}"
+        f"Total processed: {total}\n"
+        f"✅ Success: {success}\n"
+        f"❌ Failed: {failed}\n"
+        f"⚠️ PeerInvalid/Blocked (skipped): {peer_invalid}\n"
+        f"🔕 No pinned_id (skipped): {skipped}"
+    )
+
+
+# ─────────────────────────────────────────────
+#  /broadcastwelcome — SABKO welcome message bhejo
+#  (pinned_msg_id ho ya na ho — DB ke SABHI users)
+#
+#  Useful after redeploy ya fresh welcome push ke liye
+#  ✅ FloodWait handle hota hai
+#  ✅ PeerIdInvalid pe skip (delete nahi)
+# ─────────────────────────────────────────────
+@Client.on_message(filters.command('broadcastwelcome') & filters.user(ADMINS) & filters.private)
+async def broadcast_welcome(client, message):
+    text_parts = message.text.split(None, 1)
+    if len(text_parts) < 2 or not text_parts[1].strip():
+        await message.reply(
+            "<b>📢 Sabko welcome message broadcast karne ka tarika:</b>\n\n"
+            "<code>/broadcastwelcome Aapka message text</code>\n\n"
+            "<b>Variables:</b>\n"
+            "• <code>{mention}</code> → user mention\n"
+            "• <code>{first_name}</code> → user ka naam\n\n"
+            "⚠️ Ye command DB ke SABHI users ko message bhejega.\n"
+            "Sirf pinned_msg_id wale nahi — sab ko!\n\n"
+            "💡 Redeploy ke baad purane users ko reach karne ke liye use karo."
+        )
+        return
+
+    new_text = text_parts[1].strip()
+    sts = await message.reply("📢 Broadcast shuru ho raha hai...")
+
+    users = db.col.find({})
+    total = 0
+    success = 0
+    failed = 0
+    peer_invalid = 0
+
+    bot_username = (await client.get_me()).username
+    total_users = await db.total_users_count()
+
+    async for user in users:
+        user_id = user.get('id')
+        if not user_id:
+            continue
+
+        total += 1
+        try:
+            user_mention = f"<a href='tg://user?id={user_id}'>{user.get('name', 'User')}</a>"
+            formatted_text = new_text.format(
+                mention=user_mention,
+                first_name=user.get('name', 'User')
+            )
+
+            sent_msg = await client.send_message(
+                chat_id=int(user_id),
+                text=formatted_text,
+                reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("🤖 Start Bot & Get Updates",
+                        url=f"https://t.me/{bot_username}?start=welcome")]]
+                )
+            )
+
+            # pinned_msg_id bhi update karo
+            await db.col.update_one(
+                {'id': user_id},
+                {'$set': {'pinned_msg_id': sent_msg.id}}
+            )
+
+            success += 1
+
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
+            failed += 1
+        except (PeerIdInvalid, UserIsBlocked, InputUserDeactivated):
+            # ⚠️ Delete MAT karo — sirf skip
+            peer_invalid += 1
+        except Exception:
+            failed += 1
+
+        if total % 20 == 0:
+            await sts.edit(
+                f"📢 Broadcast in progress...\n\n"
+                f"Total: {total_users} | Done: {total}\n"
+                f"✅ Success: {success} | ❌ Failed: {failed}\n"
+                f"⚠️ Skipped (peer/blocked): {peer_invalid}"
+            )
+        await asyncio.sleep(0.3)
+
+    await sts.edit(
+        f"✅ <b>Broadcast Complete!</b>\n\n"
+        f"Total Users: {total_users}\n"
+        f"✅ Success: {success}\n"
+        f"❌ Failed: {failed}\n"
+        f"⚠️ PeerInvalid/Blocked (skipped): {peer_invalid}"
     )
 
 
@@ -265,19 +363,18 @@ async def approve_new(client, m):
                 await client.pin_chat_message(
                     chat_id=m.from_user.id,
                     message_id=sent_msg.id,
-                    disable_notification=True  # Silent pin — user ko extra notification nahi aayega
+                    disable_notification=True
                 )
             except Exception:
-                pass  # Agar pin na ho paye toh silently skip
+                pass
 
-            # ── Message ID DB mein save karo (baad mein edit ke liye) ──
+            # ── Message ID DB mein save karo ──
             await db.col.update_one(
                 {'id': m.from_user.id},
                 {'$set': {'pinned_msg_id': sent_msg.id}}
             )
 
         except Exception:
-            # User ne privacy lock kiya ho toh skip
             pass
 
     except Exception as e:
