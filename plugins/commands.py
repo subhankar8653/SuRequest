@@ -291,17 +291,26 @@ async def broadcast_welcome(client, message):
 @Client.on_message(filters.command('accept') & filters.private)
 async def accept(client, message):
     show = await message.reply("**Please Wait.....**")
+    user_data = await db.get_session(message.from_user.id)
+    if user_data is None:
+        await show.edit("**For Accepting Pending Requests You Have To /login First.**")
+        return
+    try:
+        acc = Client("joinrequest", session_string=user_data, api_hash=API_HASH, api_id=API_ID)
+        await acc.connect()
+    except:
+        return await show.edit("**Your Login Session Expired. So /logout First Then Login Again By - /login**")
     show = await show.edit(
         "**Now Forward A Message From Your Channel Or Group With Forward Tag\n\n"
-        "Make Sure Bot Is Admin In That Channel Or Group With Add Members Permission.**"
+        "Make Sure Your Logged In Account Is Admin In That Channel Or Group With Full Rights.**"
     )
     vj = await client.listen(message.chat.id)
     if vj.forward_from_chat and vj.forward_from_chat.type not in [enums.ChatType.PRIVATE, enums.ChatType.BOT]:
         chat_id = vj.forward_from_chat.id
         try:
-            info = await client.get_chat(chat_id)
+            info = await acc.get_chat(chat_id)
         except:
-            return await show.edit("**Error - Make Sure Bot Is Admin In This Channel Or Group With Add Members Permission.**")
+            await show.edit("**Error - Make Sure Your Logged In Account Is Admin In This Channel Or Group With Rights.**")
     else:
         return await message.reply("**Message Not Forwarded From Channel Or Group.**")
     await vj.delete()
@@ -316,14 +325,14 @@ async def accept(client, message):
         failed_msg = 0
 
         while True:
-            join_requests = [request async for request in client.get_chat_join_requests(chat_id)]
+            join_requests = [request async for request in acc.get_chat_join_requests(chat_id)]
             if not join_requests:
                 break
 
             for request in join_requests:
                 user = request.user
                 try:
-                    await client.approve_chat_join_request(chat_id, user.id)
+                    await acc.approve_chat_join_request(chat_id, user.id)
                 except Exception:
                     pass
 
