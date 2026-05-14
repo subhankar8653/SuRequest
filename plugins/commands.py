@@ -112,34 +112,42 @@ async def edit_welcome(client, message):
     success = 0
     failed = 0
 
+    bot_username = (await client.get_me()).username
+
     async for user in users:
         total += 1
         try:
-            # User ka mention banao
             user_mention = f"<a href='tg://user?id={user['id']}'>{user.get('name', 'User')}</a>"
             formatted_text = new_text.format(
                 mention=user_mention,
                 first_name=user.get('name', 'User')
             )
-            bot_username = (await client.get_me()).username
-            await client.edit_message_text(
+
+            # Step 1: Purana message delete karo (silently)
+            try:
+                await client.delete_messages(
+                    chat_id=int(user['id']),
+                    message_ids=int(user['pinned_msg_id'])
+                )
+            except Exception:
+                pass
+
+            # Step 2: Naya message bhejo — user ko notification aayega
+            new_msg = await client.send_message(
                 chat_id=int(user['id']),
-                message_id=int(user['pinned_msg_id']),
                 text=formatted_text,
                 reply_markup=InlineKeyboardMarkup(
                     [[InlineKeyboardButton("🤖 Start Bot & Get Updates",
                         url=f"https://t.me/{bot_username}?start=welcome")]]
                 )
             )
-            # Edit ke baad re-pin karo taaki user ko notification aaye
-            try:
-                await client.pin_chat_message(
-                    chat_id=int(user['id']),
-                    message_id=int(user['pinned_msg_id']),
-                    disable_notification=False  # Notification ON — user ko pata chale
-                )
-            except Exception:
-                pass
+
+            # Step 3: Naye message ka ID DB mein update karo
+            await db.col.update_one(
+                {'id': user['id']},
+                {'$set': {'pinned_msg_id': new_msg.id}}
+            )
+
             success += 1
         except Exception as e:
             failed += 1
