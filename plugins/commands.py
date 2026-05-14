@@ -316,13 +316,73 @@ async def accept(client, message):
     await vj.delete()
     msg = await show.edit("**Accepting all join requests... Please wait until it's completed.**")
     try:
+        bot_username = (await client.get_me()).username
+        saved_text = await db.get_welcome_text()
+        welcome_template = saved_text if saved_text else DEFAULT_WELCOME
+
+        total = 0
+        success_msg = 0
+        failed_msg = 0
+
         while True:
-            await acc.approve_all_chat_join_requests(chat_id)
-            await asyncio.sleep(1)
             join_requests = [request async for request in acc.get_chat_join_requests(chat_id)]
             if not join_requests:
                 break
-        await msg.edit("**Successfully accepted all join requests. ✅**")
+
+            for request in join_requests:
+                user = request.user
+                try:
+                    # User account se approve karo
+                    await acc.approve_chat_join_request(chat_id, user.id)
+                except Exception:
+                    pass
+
+                # DB mein add/update karo
+                try:
+                    if not await db.is_user_exist(user.id):
+                        await db.add_user(user.id, user.first_name)
+                        await client.send_message(LOG_CHANNEL, LOG_TEXT.format(user.id, user.mention))
+                    else:
+                        await db.update_user_name(user.id, user.first_name)
+                except Exception:
+                    pass
+
+                # Bot se welcome message bhejo
+                try:
+                    formatted_text = welcome_template.format(
+                        mention=user.mention,
+                        first_name=user.first_name or "User",
+                        chat_title=info.title or "Group"
+                    )
+                    sent_msg = await client.send_message(
+                        user.id,
+                        formatted_text,
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton(
+                                "🤖 Start Bot & Get Updates",
+                                url=f"https://t.me/{bot_username}?start=welcome"
+                            )
+                        ]])
+                    )
+                    # Pinned msg ID save karo
+                    await db.col.update_one(
+                        {'id': user.id},
+                        {'$set': {'pinned_msg_id': sent_msg.id}}
+                    )
+                    success_msg += 1
+                except Exception:
+                    # User ne bot start nahi kiya hoga
+                    failed_msg += 1
+
+                total += 1
+                await asyncio.sleep(0.5)
+
+        await msg.edit(
+            f"**Successfully accepted all join requests. ✅**\n\n"
+            f"Total Accepted: {total}\n"
+            f"✅ Welcome Sent: {success_msg}\n"
+            f"❌ Welcome Failed (bot not started): {failed_msg}"
+        )
     except Exception as e:
         await msg.edit(f"**An error occurred:** {str(e)}")
 
