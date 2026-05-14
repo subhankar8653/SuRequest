@@ -5,14 +5,6 @@
 **Powered By [@SuhaniBots](https://t.me/SuhaniBots)**
 
 ---
-
-## Deploy on Railway
-
-1. Fork this repo
-2. Go to [railway.app](https://railway.app) → New Project → Deploy from GitHub repo
-3. Add the environment variables below
-4. Deploy!
-
 ---
 
 ## Environment Variables
