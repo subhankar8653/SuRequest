@@ -74,17 +74,35 @@ async def approve_new(client, m):
     if NEW_REQ_MODE == False:
         return
     try:
+        # Pehle DB mein add karo (bot se baat na ki ho tab bhi)
         if not await db.is_user_exist(m.from_user.id):
             await db.add_user(m.from_user.id, m.from_user.first_name)
             await client.send_message(LOG_CHANNEL, LOG_TEXT.format(m.from_user.id, m.from_user.mention))
+
         await client.approve_chat_join_request(m.chat.id, m.from_user.id)
+
+        # Welcome message with Start Bot button (taaki future broadcast bhi kaam kare)
         try:
+            bot_username = (await client.get_me()).username
             await client.send_message(
                 m.from_user.id,
-                f"**Hello {m.from_user.mention}!\nWelcome To {m.chat.title}\n\n__Powered By : @SuhaniBots __**"
+                f"<b>Hello {m.from_user.mention}! 👋\n"
+                f"Welcome To <b>{m.chat.title}</b>\n\n"
+                f"📢 Hamare updates pane ke liye neeche button dabao!\n\n"
+                f"<i>Powered By : @SuhaniBots</i></b>",
+                reply_markup=InlineKeyboardMarkup(
+                    [[
+                        InlineKeyboardButton(
+                            "🤖 Start Bot & Get Updates",
+                            url=f"https://t.me/{bot_username}?start=welcome"
+                        )
+                    ]]
+                )
             )
         except:
+            # User ne privacy settings se block kiya ho toh skip
             pass
+
     except Exception as e:
         print(str(e))
         pass
