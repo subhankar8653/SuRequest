@@ -178,30 +178,32 @@ async def edit_welcome(client, message):
 
 
 # ─────────────────────────────────────────────
-#  /broadcastwelcome — SABKO welcome message bhejo
-#  (pinned_msg_id ho ya na ho — DB ke SABHI users)
+#  /broadcastwelcome — Kisi bhi message ko REPLY
+#  karke likho /broadcastwelcome — woh message
+#  DB ke SABHI users ko copy ho ke jaayega.
 #
-#  Useful after redeploy ya fresh welcome push ke liye
+#  ✅ Broadcast ki tarah reply-based
+#  ✅ Har user ka purana pinned_msg_id wala
+#     message pehle DELETE hoga
+#  ✅ Naya message send hoga + pinned_msg_id update
 #  ✅ FloodWait handle hota hai
 #  ✅ PeerIdInvalid pe skip (delete nahi)
 # ─────────────────────────────────────────────
 @Client.on_message(filters.command('broadcastwelcome') & filters.user(ADMINS) & filters.private)
 async def broadcast_welcome(client, message):
-    text_parts = message.text.split(None, 1)
-    if len(text_parts) < 2 or not text_parts[1].strip():
+    # Reply check — bilkul /broadcast ki tarah
+    if not message.reply_to_message:
         await message.reply(
-            "<b>📢 Sabko welcome message broadcast karne ka tarika:</b>\n\n"
-            "<code>/broadcastwelcome Aapka message text</code>\n\n"
-            "<b>Variables:</b>\n"
-            "• <code>{mention}</code> → user mention\n"
-            "• <code>{first_name}</code> → user ka naam\n\n"
-            "⚠️ Ye command DB ke SABHI users ko message bhejega.\n"
-            "Sirf pinned_msg_id wale nahi — sab ko!\n\n"
-            "💡 Redeploy ke baad purane users ko reach karne ke liye use karo."
+            "<b>📢 Broadcastwelcome use karne ka tarika:</b>\n\n"
+            "Kisi bhi message ko <b>reply</b> karo aur likho:\n"
+            "<code>/broadcastwelcome</code>\n\n"
+            "✅ Woh message DB ke <b>sabhi users</b> ko jaayega.\n"
+            "🗑 Har user ka <b>purana welcome message</b> pehle delete hoga.\n"
+            "📌 Naya message <b>pinned_msg_id</b> mein save hoga."
         )
         return
 
-    new_text = text_parts[1].strip()
+    b_msg = message.reply_to_message
     sts = await message.reply("📢 Broadcast shuru ho raha hai...")
 
     users = db.col.find({})
@@ -210,7 +212,6 @@ async def broadcast_welcome(client, message):
     failed = 0
     peer_invalid = 0
 
-    bot_username = (await client.get_me()).username
     total_users = await db.total_users_count()
 
     async for user in users:
@@ -220,22 +221,21 @@ async def broadcast_welcome(client, message):
 
         total += 1
         try:
-            user_mention = f"<a href='tg://user?id={user_id}'>{user.get('name', 'User')}</a>"
-            formatted_text = new_text.format(
-                mention=user_mention,
-                first_name=user.get('name', 'User')
-            )
+            # Step 1: Purana pinned welcome message delete karo
+            old_pinned_id = user.get('pinned_msg_id')
+            if old_pinned_id:
+                try:
+                    await client.delete_messages(
+                        chat_id=int(user_id),
+                        message_ids=int(old_pinned_id)
+                    )
+                except Exception:
+                    pass  # Already deleted ya access nahi — silently skip
 
-            sent_msg = await client.send_message(
-                chat_id=int(user_id),
-                text=formatted_text,
-                reply_markup=InlineKeyboardMarkup(
-                    [[InlineKeyboardButton("🤖 Start Bot & Get Updates",
-                        url=f"https://t.me/{bot_username}?start=welcome")]]
-                )
-            )
+            # Step 2: Replied message copy karke bhejo (bilkul /broadcast ki tarah)
+            sent_msg = await b_msg.copy(chat_id=int(user_id))
 
-            # pinned_msg_id bhi update karo
+            # Step 3: Naya pinned_msg_id DB mein save karo
             await db.col.update_one(
                 {'id': user_id},
                 {'$set': {'pinned_msg_id': sent_msg.id}}
@@ -245,7 +245,22 @@ async def broadcast_welcome(client, message):
 
         except FloodWait as e:
             await asyncio.sleep(e.value)
-            failed += 1
+            # FloodWait ke baad is user ko retry karo
+            try:
+                old_pinned_id = user.get('pinned_msg_id')
+                if old_pinned_id:
+                    try:
+                        await client.delete_messages(int(user_id), int(old_pinned_id))
+                    except Exception:
+                        pass
+                sent_msg = await b_msg.copy(chat_id=int(user_id))
+                await db.col.update_one(
+                    {'id': user_id},
+                    {'$set': {'pinned_msg_id': sent_msg.id}}
+                )
+                success += 1
+            except Exception:
+                failed += 1
         except (PeerIdInvalid, UserIsBlocked, InputUserDeactivated):
             # ⚠️ Delete MAT karo — sirf skip
             peer_invalid += 1
