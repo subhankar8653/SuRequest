@@ -4,8 +4,6 @@
 
 **Powered By [@SuhaniBots](https://t.me/SuhaniBots)**
 
----
----
 
 ## Environment Variables
 
