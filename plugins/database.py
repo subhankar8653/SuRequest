@@ -34,6 +34,9 @@ class Database:
     async def delete_user(self, user_id):
         await self.col.delete_many({'id': int(user_id)})
 
+    async def update_user_name(self, id, name):
+        await self.col.update_one({'id': int(id)}, {'$set': {'name': name}})
+
     async def set_session(self, id, session):
         await self.col.update_one({'id': int(id)}, {'$set': {'session': session}})
 

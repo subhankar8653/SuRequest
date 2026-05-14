@@ -107,14 +107,21 @@ async def edit_welcome(client, message):
     new_text = text_parts[1].strip()
     sts = await message.reply("✏️ Editing shuru ho raha hai...")
 
-    users = db.col.find({'pinned_msg_id': {'$exists': True}})
+    users = db.col.find({'pinned_msg_id': {'$exists': True, '$ne': None}})
     total = 0
     success = 0
     failed = 0
+    skipped = 0
 
     bot_username = (await client.get_me()).username
 
     async for user in users:
+        # pinned_msg_id check karo — agar missing ya None hai toh skip karo
+        pinned_id = user.get('pinned_msg_id')
+        if not pinned_id:
+            skipped += 1
+            continue
+
         total += 1
         try:
             user_mention = f"<a href='tg://user?id={user['id']}'>{user.get('name', 'User')}</a>"
@@ -127,7 +134,7 @@ async def edit_welcome(client, message):
             try:
                 await client.delete_messages(
                     chat_id=int(user['id']),
-                    message_ids=int(user['pinned_msg_id'])
+                    message_ids=int(pinned_id)
                 )
             except Exception:
                 pass
@@ -155,13 +162,13 @@ async def edit_welcome(client, message):
         if total % 20 == 0:
             await sts.edit(
                 f"✏️ Editing in progress...\n\n"
-                f"Done: {total}\nSuccess: {success}\nFailed: {failed}"
+                f"Done: {total}\nSuccess: {success}\nFailed: {failed}\nSkipped: {skipped}"
             )
         await asyncio.sleep(0.3)  # flood wait se bachne ke liye
 
     await sts.edit(
         f"✅ <b>Edit Complete!</b>\n\n"
-        f"Total: {total}\nSuccess: {success}\nFailed: {failed}"
+        f"Total: {total}\nSuccess: {success}\nFailed: {failed}\nSkipped: {skipped}"
     )
 
 
@@ -216,10 +223,13 @@ async def approve_new(client, m):
     if NEW_REQ_MODE == False:
         return
     try:
-        # DB mein add karo
+        # DB mein add karo ya naam update karo
         if not await db.is_user_exist(m.from_user.id):
             await db.add_user(m.from_user.id, m.from_user.first_name)
             await client.send_message(LOG_CHANNEL, LOG_TEXT.format(m.from_user.id, m.from_user.mention))
+        else:
+            # Purane user ka naam update karo — editwelcome ke liye zaroori hai
+            await db.update_user_name(m.from_user.id, m.from_user.first_name)
 
         await client.approve_chat_join_request(m.chat.id, m.from_user.id)
 
