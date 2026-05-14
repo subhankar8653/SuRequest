@@ -121,15 +121,25 @@ async def edit_welcome(client, message):
                 mention=user_mention,
                 first_name=user.get('name', 'User')
             )
+            bot_username = (await client.get_me()).username
             await client.edit_message_text(
                 chat_id=int(user['id']),
                 message_id=int(user['pinned_msg_id']),
                 text=formatted_text,
                 reply_markup=InlineKeyboardMarkup(
                     [[InlineKeyboardButton("🤖 Start Bot & Get Updates",
-                        url=f"https://t.me/{(await client.get_me()).username}?start=welcome")]]
+                        url=f"https://t.me/{bot_username}?start=welcome")]]
                 )
             )
+            # Edit ke baad re-pin karo taaki user ko notification aaye
+            try:
+                await client.pin_chat_message(
+                    chat_id=int(user['id']),
+                    message_id=int(user['pinned_msg_id']),
+                    disable_notification=False  # Notification ON — user ko pata chale
+                )
+            except Exception:
+                pass
             success += 1
         except Exception as e:
             failed += 1
