@@ -7,6 +7,7 @@ class Database:
         self._client = motor.motor_asyncio.AsyncIOMotorClient(uri)
         self.db = self._client[database_name]
         self.col = self.db.users
+        self.settings_col = self.db.settings  # welcome message settings ke liye
 
     def new_user(self, id, name):
         return dict(
@@ -39,5 +40,17 @@ class Database:
     async def get_session(self, id):
         user = await self.col.find_one({'id': int(id)})
         return user['session']
+
+    # ── Welcome message text DB mein save/get karo ──────────────────────
+    async def set_welcome_text(self, text: str):
+        await self.settings_col.update_one(
+            {'_id': 'welcome_text'},
+            {'$set': {'value': text}},
+            upsert=True
+        )
+
+    async def get_welcome_text(self) -> str | None:
+        doc = await self.settings_col.find_one({'_id': 'welcome_text'})
+        return doc['value'] if doc else None
 
 db = Database(DB_URI, DB_NAME)

@@ -1,6 +1,6 @@
-import asyncio 
+import asyncio
 from pyrogram import Client, filters, enums
-from config import LOG_CHANNEL, API_ID, API_HASH, NEW_REQ_MODE
+from config import LOG_CHANNEL, API_ID, API_HASH, NEW_REQ_MODE, ADMINS
 from plugins.database import db
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -11,6 +11,18 @@ ID - <code>{}</code>
 Name - {}</b>
 """
 
+# Default welcome text (jab tak admin ne custom set na kiya ho)
+DEFAULT_WELCOME = (
+    "<b>Hello {mention}! 👋\n"
+    "Welcome To {chat_title}\n\n"
+    "📢 Hamare updates pane ke liye neeche button dabao!\n\n"
+    "<i>Powered By : @SuhaniBots</i></b>"
+)
+
+
+# ─────────────────────────────────────────────
+#  /start
+# ─────────────────────────────────────────────
 @Client.on_message(filters.command('start'))
 async def start_message(c, m):
     if not await db.is_user_exist(m.from_user.id):
@@ -31,6 +43,113 @@ async def start_message(c, m):
         )
     )
 
+
+# ─────────────────────────────────────────────
+#  /setwelcome  — admin welcome text set kare
+#
+#  Usage:
+#    /setwelcome
+#    Aapka naya welcome message yahan likho
+#
+#  Variables jo use kar sakte ho:
+#    {mention}    → user ka mention
+#    {first_name} → user ka naam
+#    {chat_title} → group ka naam
+# ─────────────────────────────────────────────
+@Client.on_message(filters.command('setwelcome') & filters.user(ADMINS) & filters.private)
+async def set_welcome(client, message):
+    # Command ke baad wala text lo
+    text_parts = message.text.split(None, 1)
+    if len(text_parts) < 2 or not text_parts[1].strip():
+        await message.reply(
+            "<b>📝 Welcome message set karne ka tarika:</b>\n\n"
+            "<code>/setwelcome Aapka message yahan</code>\n\n"
+            "<b>Variables:</b>\n"
+            "• <code>{mention}</code> → user mention\n"
+            "• <code>{first_name}</code> → user ka naam\n"
+            "• <code>{chat_title}</code> → group ka naam\n\n"
+            "<b>Example:</b>\n"
+            "<code>/setwelcome Hello {mention}! 👋\nWelcome karo hamari family mein!</code>"
+        )
+        return
+
+    new_text = text_parts[1].strip()
+    await db.set_welcome_text(new_text)
+    await message.reply(
+        f"✅ <b>Welcome message save ho gaya!</b>\n\n"
+        f"<b>Preview:</b>\n{new_text.format(mention='@TestUser', first_name='Test', chat_title='YourGroup')}"
+    )
+
+
+# ─────────────────────────────────────────────
+#  /editwelcome — already bheje gaye pinned
+#                welcome messages bulk edit karo
+#
+#  Ye command sirf ADMIN ke bot DM mein chalega.
+#  Bot DB mein stored har user ke pinned_msg_id
+#  use karke unka message edit karega.
+# ─────────────────────────────────────────────
+@Client.on_message(filters.command('editwelcome') & filters.user(ADMINS) & filters.private)
+async def edit_welcome(client, message):
+    text_parts = message.text.split(None, 1)
+    if len(text_parts) < 2 or not text_parts[1].strip():
+        await message.reply(
+            "<b>✏️ Purane welcome messages edit karne ka tarika:</b>\n\n"
+            "<code>/editwelcome Naya message text</code>\n\n"
+            "<b>Variables:</b>\n"
+            "• <code>{mention}</code> → user mention\n"
+            "• <code>{first_name}</code> → user ka naam\n\n"
+            "⚠️ Sirf unhi users ka message edit hoga jinka\n"
+            "pinned_msg_id DB mein saved hai."
+        )
+        return
+
+    new_text = text_parts[1].strip()
+    sts = await message.reply("✏️ Editing shuru ho raha hai...")
+
+    users = db.col.find({'pinned_msg_id': {'$exists': True}})
+    total = 0
+    success = 0
+    failed = 0
+
+    async for user in users:
+        total += 1
+        try:
+            # User ka mention banao
+            user_mention = f"<a href='tg://user?id={user['id']}'>{user.get('name', 'User')}</a>"
+            formatted_text = new_text.format(
+                mention=user_mention,
+                first_name=user.get('name', 'User')
+            )
+            await client.edit_message_text(
+                chat_id=int(user['id']),
+                message_id=int(user['pinned_msg_id']),
+                text=formatted_text,
+                reply_markup=InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("🤖 Start Bot & Get Updates",
+                        url=f"https://t.me/{(await client.get_me()).username}?start=welcome")]]
+                )
+            )
+            success += 1
+        except Exception as e:
+            failed += 1
+
+        if total % 20 == 0:
+            await sts.edit(
+                f"✏️ Editing in progress...\n\n"
+                f"Done: {total}\nSuccess: {success}\nFailed: {failed}"
+            )
+        await asyncio.sleep(0.3)  # flood wait se bachne ke liye
+
+    await sts.edit(
+        f"✅ <b>Edit Complete!</b>\n\n"
+        f"Total: {total}\nSuccess: {success}\nFailed: {failed}"
+    )
+
+
+# ─────────────────────────────────────────────
+#  /accept
+# ─────────────────────────────────────────────
 @Client.on_message(filters.command('accept') & filters.private)
 async def accept(client, message):
     show = await message.reply("**Please Wait.....**")
@@ -69,27 +188,40 @@ async def accept(client, message):
     except Exception as e:
         await msg.edit(f"**An error occurred:** {str(e)}")
 
+
+# ─────────────────────────────────────────────
+#  Auto-approve new join requests
+#  + Welcome message bhejo + Pin karo
+# ─────────────────────────────────────────────
 @Client.on_chat_join_request(filters.group | filters.channel)
 async def approve_new(client, m):
     if NEW_REQ_MODE == False:
         return
     try:
-        # Pehle DB mein add karo (bot se baat na ki ho tab bhi)
+        # DB mein add karo
         if not await db.is_user_exist(m.from_user.id):
             await db.add_user(m.from_user.id, m.from_user.first_name)
             await client.send_message(LOG_CHANNEL, LOG_TEXT.format(m.from_user.id, m.from_user.mention))
 
         await client.approve_chat_join_request(m.chat.id, m.from_user.id)
 
-        # Welcome message with Start Bot button (taaki future broadcast bhi kaam kare)
+        # Welcome text — DB se lo, warna default use karo
+        saved_text = await db.get_welcome_text()
+        welcome_template = saved_text if saved_text else DEFAULT_WELCOME
+
+        formatted_text = welcome_template.format(
+            mention=m.from_user.mention,
+            first_name=m.from_user.first_name or "User",
+            chat_title=m.chat.title or "Group"
+        )
+
         try:
             bot_username = (await client.get_me()).username
-            await client.send_message(
+
+            # ── Welcome message bhejo ──
+            sent_msg = await client.send_message(
                 m.from_user.id,
-                f"<b>Hello {m.from_user.mention}! 👋\n"
-                f"Welcome To <b>{m.chat.title}</b>\n\n"
-                f"📢 Hamare updates pane ke liye neeche button dabao!\n\n"
-                f"<i>Powered By : @SuhaniBots</i></b>",
+                formatted_text,
                 reply_markup=InlineKeyboardMarkup(
                     [[
                         InlineKeyboardButton(
@@ -99,8 +231,25 @@ async def approve_new(client, m):
                     ]]
                 )
             )
-        except:
-            # User ne privacy settings se block kiya ho toh skip
+
+            # ── Us message ko pin karo (bot DM mein) ──
+            try:
+                await client.pin_chat_message(
+                    chat_id=m.from_user.id,
+                    message_id=sent_msg.id,
+                    disable_notification=True  # Silent pin — user ko extra notification nahi aayega
+                )
+            except Exception:
+                pass  # Agar pin na ho paye toh silently skip
+
+            # ── Message ID DB mein save karo (baad mein edit ke liye) ──
+            await db.col.update_one(
+                {'id': m.from_user.id},
+                {'$set': {'pinned_msg_id': sent_msg.id}}
+            )
+
+        except Exception:
+            # User ne privacy lock kiya ho toh skip
             pass
 
     except Exception as e:
