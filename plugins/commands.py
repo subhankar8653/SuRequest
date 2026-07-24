@@ -286,12 +286,24 @@ async def broadcast_welcome(client, message):
 
 
 # ─────────────────────────────────────────────
-#  /accept
+#  /accept  (with Cancel support + stuck-loop fix)
 # ─────────────────────────────────────────────
+
+# user_id -> True means "please stop"
+CANCEL_FLAGS = {}
+
+
+def cancel_markup(user_id):
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_accept:{user_id}")]]
+    )
+
+
 @Client.on_message(filters.command('accept') & filters.private)
 async def accept(client, message):
+    uid = message.from_user.id
     show = await message.reply("**Please Wait.....**")
-    user_data = await db.get_session(message.from_user.id)
+    user_data = await db.get_session(uid)
     if user_data is None:
         await show.edit("**For Accepting Pending Requests You Have To /login First.**")
         return
@@ -310,51 +322,126 @@ async def accept(client, message):
         try:
             info = await acc.get_chat(chat_id)
         except:
-            await show.edit("**Error - Make Sure Your Logged In Account Is Admin In This Channel Or Group With Rights.**")
+            await acc.disconnect()
+            return await show.edit("**Error - Make Sure Your Logged In Account Is Admin In This Channel Or Group With Rights.**")
     else:
+        await acc.disconnect()
         return await message.reply("**Message Not Forwarded From Channel Or Group.**")
     await vj.delete()
-    msg = await show.edit("**Accepting all join requests... Please wait until it's completed.**")
+
+    CANCEL_FLAGS[uid] = False
+    msg = await show.edit(
+        "**Accepting all join requests... Please wait until it's completed.**",
+        reply_markup=cancel_markup(uid)
+    )
+
     try:
         total = 0
-
+        failed = 0
         BATCH_SIZE = 50
+        attempts = {}          # user_id -> number of failed tries
+        MAX_ATTEMPTS = 3
 
         async def process_one(request):
-            nonlocal total
+            nonlocal total, failed
             user = request.user
             try:
                 await acc.approve_chat_join_request(chat_id, user.id)
+                total += 1
+                try:
+                    if not await db.is_user_exist(user.id):
+                        await db.add_user(user.id, user.first_name)
+                    else:
+                        await db.update_user_name(user.id, user.first_name)
+                except Exception:
+                    pass
+                return True
+            except FloodWait as e:
+                await asyncio.sleep(e.value)
+                return False
             except Exception:
-                pass
-            try:
-                if not await db.is_user_exist(user.id):
-                    await db.add_user(user.id, user.first_name)
-                else:
-                    await db.update_user_name(user.id, user.first_name)
-            except Exception:
-                pass
-            total += 1
+                attempts[user.id] = attempts.get(user.id, 0) + 1
+                if attempts[user.id] >= MAX_ATTEMPTS:
+                    failed += 1
+                    return True   # give up on this one, don't retry forever
+                return False
+
+        stall_rounds = 0
+        prev_pending_count = None
 
         while True:
+            if CANCEL_FLAGS.get(uid):
+                break
+
             join_requests = [request async for request in acc.get_chat_join_requests(chat_id)]
             if not join_requests:
                 break
+
+            # If pending count never shrinks across rounds, something is stuck
+            # (permissions / flood limits) — stop instead of looping forever.
+            if prev_pending_count is not None and len(join_requests) >= prev_pending_count:
+                stall_rounds += 1
+            else:
+                stall_rounds = 0
+            prev_pending_count = len(join_requests)
+            if stall_rounds >= 3:
+                break
+
             for i in range(0, len(join_requests), BATCH_SIZE):
+                if CANCEL_FLAGS.get(uid):
+                    break
                 batch = join_requests[i:i + BATCH_SIZE]
                 await asyncio.gather(*[process_one(r) for r in batch])
                 await msg.edit(
                     f"**Processing... Please wait ⏳**\n\n"
-                    f"✅ Accepted so far: {total}"
+                    f"✅ Accepted so far: {total}\n"
+                    f"⚠️ Failed: {failed}",
+                    reply_markup=cancel_markup(uid)
                 )
                 await asyncio.sleep(1)
 
-        await msg.edit(
-            f"**Successfully accepted all join requests. ✅**\n\n"
-            f"Total Accepted: {total}\n"
-        )
+        if CANCEL_FLAGS.get(uid):
+            await msg.edit(
+                f"**❌ Cancelled by user.**\n\n"
+                f"✅ Accepted: {total}\n"
+                f"⚠️ Failed: {failed}"
+            )
+        else:
+            await msg.edit(
+                f"**Successfully accepted all join requests. ✅**\n\n"
+                f"Total Accepted: {total}\n"
+                f"⚠️ Failed/Skipped: {failed}"
+            )
     except Exception as e:
         await msg.edit(f"**An error occurred:** {str(e)}")
+    finally:
+        CANCEL_FLAGS.pop(uid, None)
+        try:
+            await acc.disconnect()
+        except Exception:
+            pass
+
+
+@Client.on_message(filters.command('cancel') & filters.private)
+async def cancel_accept_cmd(client, message):
+    uid = message.from_user.id
+    if uid in CANCEL_FLAGS:
+        CANCEL_FLAGS[uid] = True
+        await message.reply("**🛑 Cancelling... please wait for the current batch to finish.**")
+    else:
+        await message.reply("**No active /accept process running.**")
+
+
+@Client.on_callback_query(filters.regex(r"^cancel_accept:(\d+)$"))
+async def cancel_accept_button(client, query):
+    target_uid = int(query.data.split(":")[1])
+    if query.from_user.id != target_uid:
+        return await query.answer("This isn't your process.", show_alert=True)
+    if target_uid in CANCEL_FLAGS:
+        CANCEL_FLAGS[target_uid] = True
+        await query.answer("Cancelling...")
+    else:
+        await query.answer("Already finished.")
 
 
 # ─────────────────────────────────────────────
