@@ -31,5 +31,3 @@
 | `/broadcast` | Broadcast a message to all users (admin only) |
 
 ---
-
-**Powered By [@SuhaniBots](https://t.me/SuhaniBots)**
