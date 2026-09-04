@@ -1,4 +1,5 @@
 import asyncio
+import time
 from pyrogram import Client, filters, enums
 from pyrogram.errors import FloodWait, UserIsBlocked, InputUserDeactivated, PeerIdInvalid
 from config import LOG_CHANNEL, API_ID, API_HASH, NEW_REQ_MODE, ADMINS
@@ -339,15 +340,26 @@ async def accept(client, message):
         total = 0
         failed = 0
         BATCH_SIZE = 50
-        attempts = {}          # user_id -> number of failed tries
+        attempts = {}              # user_id -> number of failed tries (this run)
         MAX_ATTEMPTS = 3
+
+        # Ledger of user_ids that are FINALIZED for this run (approved, or
+        # given up on). Telegram can keep returning an already-approved
+        # request for a moment after it was approved (propagation lag) —
+        # without this ledger the bot would re-approve/re-count/re-fail
+        # the same "ghost" requests forever, which is exactly why it used
+        # to keep "accepting" long after the group had 0 real requests left.
+        processed_ids = set()
 
         async def process_one(request):
             nonlocal total, failed
             user = request.user
+            if user.id in processed_ids:
+                return True  # already finalized earlier — never touch again
             try:
                 await acc.approve_chat_join_request(chat_id, user.id)
                 total += 1
+                processed_ids.add(user.id)
                 try:
                     if not await db.is_user_exist(user.id):
                         await db.add_user(user.id, user.first_name)
@@ -363,22 +375,40 @@ async def accept(client, message):
                 attempts[user.id] = attempts.get(user.id, 0) + 1
                 if attempts[user.id] >= MAX_ATTEMPTS:
                     failed += 1
-                    return True   # give up on this one, don't retry forever
+                    processed_ids.add(user.id)  # give up for good, stop retrying
+                    return True
                 return False
 
         stall_rounds = 0
         prev_pending_count = None
+        start_time = time.monotonic()
+        MAX_RUNTIME_SECONDS = 20 * 60   # hard safety cap: never run past this
+        MAX_ROUNDS = 500                # hard safety cap: never loop past this
+        rounds = 0
 
         while True:
             if CANCEL_FLAGS.get(uid):
                 break
 
-            join_requests = [request async for request in acc.get_chat_join_requests(chat_id)]
-            if not join_requests:
+            # Hard safety nets — guarantee termination no matter what the
+            # Telegram API does (stale pending lists, weird edge cases, etc.)
+            rounds += 1
+            if rounds > MAX_ROUNDS or (time.monotonic() - start_time) > MAX_RUNTIME_SECONDS:
                 break
 
-            # If pending count never shrinks across rounds, something is stuck
-            # (permissions / flood limits) — stop instead of looping forever.
+            fetched = [request async for request in acc.get_chat_join_requests(chat_id)]
+
+            # Drop anything we've already finalized — this is what actually
+            # stops the bot from "accepting" requests that are already done
+            # but that Telegram is still momentarily echoing back to us.
+            join_requests = [r for r in fetched if r.user.id not in processed_ids]
+
+            if not join_requests:
+                break  # nothing real left to do
+
+            # If the *actionable* pending count never shrinks across rounds,
+            # something is stuck (permissions / flood limits) — stop instead
+            # of looping forever.
             if prev_pending_count is not None and len(join_requests) >= prev_pending_count:
                 stall_rounds += 1
             else:

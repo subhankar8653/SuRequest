@@ -38,11 +38,21 @@ class Database:
         await self.col.update_one({'id': int(id)}, {'$set': {'name': name}})
 
     async def set_session(self, id, session):
-        await self.col.update_one({'id': int(id)}, {'$set': {'session': session}})
+        # upsert=True — without it, a user who never did /start (so has no
+        # DB doc yet) would silently fail to save their session on /login,
+        # then get told "session expired" forever even after logging in.
+        await self.col.update_one(
+            {'id': int(id)},
+            {'$set': {'session': session}},
+            upsert=True
+        )
 
     async def get_session(self, id):
         user = await self.col.find_one({'id': int(id)})
-        return user['session']
+        # If the user has no DB doc at all (e.g. never sent /start), `user`
+        # is None — indexing user['session'] would raise an uncaught
+        # TypeError and crash the /login or /accept command.
+        return user['session'] if user else None
 
     # ── Welcome message text DB mein save/get karo ──────────────────────
     async def set_welcome_text(self, text: str):
